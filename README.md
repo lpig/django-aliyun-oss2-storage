@@ -5,19 +5,20 @@
 
 ## Install
 
-    pip install django-aliyun-oss2-storage
+    pip install git+git@github.com:lpig/django-aliyun-oss2-storage.git
 
 ## Configurations
 
 Django Aliyun OSS2 Storage 需要以下几个配置才能正常工作。这些配置通过可以环境变量或 settings.py 来设置。环境变量的优先级要高于 settings.py 。`BUCKET_NAME`是Bucket的名字，如果该bucket不存在，程序会自动创建。`BUCKET_ACL_TYPE`用于设置Bucket的权限，可以设置为`private`, `public-read`和 `public-read-write`。
 
 ```python
-ACCESS_KEY_ID = "40ZhE1HyuWdllpMh"
-ACCESS_KEY_SECRET = "KbxtlKSvKyuyuymTiQvrxhsYFMguXy"
-END_POINT = "oss-us-west-1.aliyuncs.com"
-BUCKET_NAME = "XXXX"
-ALIYUN_OSS_CNAME = "" # 自定义域名，如果不需要可以不填写
-BUCKET_ACL_TYPE = "private" # private, public-read, public-read-write
+ALIYUN_ACCESS_KEY = "access_key"
+ALIYUN_ACCESS_SECRET = "access_secret"
+ALIYUN_OSS_ENDPOINT = "oss-us-west-1.aliyuncs.com"
+ALIYUN_OSS_BUCKET = "test_bucket"
+ALIYUN_OSS_CDN_NAME = "" # 自定义域名，如果不需要可以不填写
+ALIYUN_BUCKET_CREATE = False # 如果bucket不存在是否创建，默认为False
+ALIYUN_BUCKET_ACL_TYPE = "private" # private, public-read, public-read-write
 ```
 
 ## Usage

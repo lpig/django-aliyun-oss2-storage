@@ -11,15 +11,35 @@ try:
 except ImportError:
     from urlparse import urljoin
 
+from oss2.exceptions import AccessDenied
+from oss2.api import _normalize_endpoint
+from oss2.compat import urlparse
+from oss2 import Auth, Service, BucketIterator, Bucket, ObjectIterator
+from oss2 import OBJECT_ACL_PUBLIC_READ
+
 from django.core.files import File
 from django.utils.encoding import force_text, filepath_to_uri, force_bytes
-from oss2 import Auth, Service, BucketIterator, Bucket, ObjectIterator
-from oss2.exceptions import AccessDenied
-from django.conf import settings
+from django.utils.deconstruct import deconstructible
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
 from django.core.files.storage import Storage
 from django.conf import settings
-from oss2.api import _normalize_endpoint
+
+
+def _get_config(name, default=None):
+    """
+    Get configuration variable from environment variable
+    or django setting.py
+    """
+    config = os.environ.get(name, getattr(settings, name, default))
+    if config is not None:
+        if isinstance(config, six.string_types):
+            return config.strip()
+        else:
+            return config
+    else:
+        raise ImproperlyConfigured(
+            "Can't find config for '%s' either in environment"
+            "variable or in setting.py" % name)
 
 
 class AliyunOperationError(Exception):
@@ -32,22 +52,19 @@ class AliyunOperationError(Exception):
 
 class BucketOperationMixin(object):
     def _get_bucket(self, auth):
-        if self.cname:
-            return Bucket(auth, self.cname, self.bucket_name, is_cname=True)
-        else:
-            return Bucket(auth, self.end_point, self.bucket_name)
+        return Bucket(auth, self.end_point, self.bucket_name)
 
     def _list_bucket(self, service):
         return [bucket.name for bucket in BucketIterator(service)]
 
     def _create_bucket(self, auth):
         bucket = self._get_bucket(auth)
-        bucket.create_bucket(settings.BUCKET_ACL_TYPE)
+        bucket.create_bucket(_get_config('ALIYUN_BUCKET_ACL_TYPE', 'private'))
         return bucket
 
     def _check_bucket_acl(self, bucket):
-        if bucket.get_bucket_acl().acl != settings.BUCKET_ACL_TYPE:
-            bucket.put_bucket_acl(settings.BUCKET_ACL_TYPE)
+        if bucket.get_bucket_acl().acl != _get_config('ALIYUN_BUCKET_ACL_TYPE'):
+            bucket.put_bucket_acl(_get_config('ALIYUN_BUCKET_ACL_TYPE'))
         return bucket
 
 
@@ -57,42 +74,30 @@ class AliyunBaseStorage(BucketOperationMixin, Storage):
     """
     location = ""
 
-    def __init__(self):
-        self.access_key_id = self._get_config('ACCESS_KEY_ID')
-        self.access_key_secret = self._get_config('ACCESS_KEY_SECRET')
-        self.end_point = _normalize_endpoint(self._get_config('END_POINT').strip())
-        self.bucket_name = self._get_config('BUCKET_NAME')
-        self.cname = self._get_config('ALIYUN_OSS_CNAME')
+    def __init__(self, is_read=False):
+        self.access_key_id = _get_config('ALIYUN_ACCESS_KEY')
+        self.access_key_secret = _get_config('ALIYUN_ACCESS_SECRET')
+        self.end_point = _normalize_endpoint(_get_config('ALIYUN_OSS_ENDPOINT').strip())
+        self.bucket_name = _get_config('ALIYUN_OSS_BUCKET')
+        self.cdn_host = _get_config('ALIYUN_OSS_CDN_NAME')
+        self.aliyun_bucket_create = _get_config('ALIYUN_BUCKET_CREATE', False)
+        self.bucket_acl_type = _get_config('ALIYUN_BUCKET_ACL_TYPE', 'private')
+        self.is_read = is_read  # 上传文件是否公共读
 
         self.auth = Auth(self.access_key_id, self.access_key_secret)
         self.service = Service(self.auth, self.end_point)
 
         try:
             if self.bucket_name not in self._list_bucket(self.service):
-                # create bucket if not exists
-                self.bucket = self._create_bucket(self.auth)
+                if self.aliyun_bucket_create:
+                    #  创建bucket
+                    self.bucket = self._create_bucket(self.auth)
+                raise FileExistsError(f'{self.bucket_name} is no exitis!')
             else:
-                # change bucket acl if not consists
-                self.bucket = self._check_bucket_acl(self._get_bucket(self.auth))
+                self.bucket = self._get_bucket(self.auth)
         except AccessDenied:
             # 当启用了RAM访问策略，是不允许list和create bucket的
             self.bucket = self._get_bucket(self.auth)
-
-    def _get_config(self, name):
-        """
-        Get configuration variable from environment variable
-        or django setting.py
-        """
-        config = os.environ.get(name, getattr(settings, name, None))
-        if config is not None:
-            if isinstance(config, six.string_types):
-                return config.strip()
-            else:
-                return config
-        else:
-            raise ImproperlyConfigured(
-                "Can't find config for '%s' either in environment"
-                "variable or in setting.py" % name)
 
     def _clean_name(self, name):
         """
@@ -144,6 +149,8 @@ class AliyunBaseStorage(BucketOperationMixin, Storage):
         content.open()
         content_str = b''.join(chunk for chunk in content.chunks())
         self.bucket.put_object(target_name, content_str)
+        if self.is_read:
+            self.bucket.put_object_acl(target_name, OBJECT_ACL_PUBLIC_READ)
         content.close()
 
         return self._clean_name(name)
@@ -182,8 +189,13 @@ class AliyunBaseStorage(BucketOperationMixin, Storage):
     def url(self, name):
         name = self._normalize_name(self._clean_name(name))
         # name = filepath_to_uri(name) # 这段会导致二次encode
-        name = name.encode('utf8') 
+        name = name.encode('utf8')
         # 做这个转化，是因为下面的_make_url会用urllib.quote转码，转码不支持unicode，会报错，在python2环境下。
+        if self.cdn_host:
+            p = urlparse(self.cdn_host)
+            scheme = p.scheme
+            netloc = p.netloc
+            return '{0}://{1}/{2}'.format(scheme, netloc, name.decode())
         return self.bucket._make_url(self.bucket_name, name)
 
     def read(self, name):
@@ -243,3 +255,8 @@ class AliyunFile(File):
             self.file.seek(0)
             self._storage._save(self._name, self.file)
         self.file.close()
+
+
+@deconstructible
+class DjangoAliyunBaseStorage(AliyunBaseStorage):
+    pass
